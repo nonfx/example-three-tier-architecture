@@ -54,4 +54,7 @@ resource "aws_db_instance" "main" {
   iam_database_authentication_enabled = true
   # Logging is enabled
   enabled_cloudwatch_logs_exports = ["audit", "error", "general", "slowquery"]
+
+  copy_tags_to_snapshot = true
+  deletion_protection   = true
 }

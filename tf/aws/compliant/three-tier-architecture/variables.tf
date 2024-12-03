@@ -330,7 +330,7 @@ variable "database_password" {
 variable "database_port" {
   description = "Database Port"
   type        = string
-  default     = "3306"
+  default     = "3307"
 }
 
 variable "publicly_accessible" {
@@ -355,4 +355,10 @@ variable "monitoring_role" {
   description = "The ARN of the IAM role used for RDS monitoring"
   type        = string
   default     = "iam_default"
+}
+
+variable "alb_log_bucket" {
+  type        = string
+  description = "The name of the S3 bucket for ALB access logs"
+  default     = "alb_bucket"
 }
