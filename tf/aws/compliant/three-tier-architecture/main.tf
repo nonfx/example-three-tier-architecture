@@ -39,6 +39,7 @@ module "vpc" {
   alb_security_group        = module.vpc.alb_security_group
   app_security_group        = var.app_security_group
   monitoring_role           = module.iam.monitoring_role_arn
+  alb_log_bucket            = var.alb_log_bucket
 }
 
 module "ec2" {

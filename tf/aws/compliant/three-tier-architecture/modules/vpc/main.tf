@@ -63,9 +63,8 @@ resource "aws_subnet" "public_subnet" {
   for_each                = var.public_subnet
   availability_zone       = each.key
   cidr_block              = each.value
-  map_public_ip_on_launch = "true" #makes this a public subnet
-
-  tags = merge(local.required_tags, { Name = "Public-Subnet" })
+  map_public_ip_on_launch = false #makes this a public subnet
+  tags                    = merge(local.required_tags, { Name = "Public-Subnet" })
 }
 
 #Private subnet
@@ -115,13 +114,19 @@ resource "aws_route_table_association" "main" {
   route_table_id = aws_route_table.main[each.key].id
 }
 
-#Application Load Balancer
+#Application Load Balancer# Enable access logging for the ALB
 resource "aws_lb" "main" {
   name               = var.app_alb
   internal           = var.alb_internal
   load_balancer_type = var.load_balancer_type
   security_groups    = [var.alb_security_group]
   subnets            = [for value in aws_subnet.public_subnet : value.id]
+
+  access_logs {
+    bucket  = var.alb_log_bucket
+    prefix  = "alb-logs"
+    enabled = true
+  }
 
   tags = merge(local.required_tags, { Name = "Application-ALB" })
 }
@@ -171,6 +176,8 @@ resource "aws_autoscaling_group" "main" {
     value               = "Production"
     propagate_at_launch = true
   }
+  health_check_type         = "ELB"
+  health_check_grace_period = 300
 }
 
 # Database Subnet Group

@@ -21,7 +21,11 @@ resource "aws_launch_template" "main" {
     #private_key is created within AWS EC2 Console, .pem file placed in same directory as .tf
     private_key = file("./terraform.pem")
     host = var.connection_host
-   }
+  }
+
+  metadata_options {
+    http_tokens = "required"
+  }
 
   tags = local.required_tags
 }
