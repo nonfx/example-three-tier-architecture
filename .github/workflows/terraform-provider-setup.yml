@@ -1,0 +1,60 @@
+name: Setup Custom Terraform Provider
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  setup-provider:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Download Terraform Provider
+      run: |
+        # Define the URL for the provider
+        PROVIDER_URL="https://github.com/nonfx/terraform-provider-starchitect/releases/download/v0.0.4/terraform-provider-starchitect_linux_amd64.zip"
+
+        # Create the plugins directory
+        mkdir -p $HOME/.terraform.d/plugins
+
+        # Download the provider binary
+        curl -L -o terraform-provider-starchitect.zip $PROVIDER_URL
+
+        # Unzip the provider
+        unzip terraform-provider-starchitect.zip -d $HOME/.terraform.d/plugins/
+
+    - name: Download Regula Binary
+      run: |
+        # Define the URL for the Regula binary
+        REGULA_URL="https://github.com/fugue/regula/releases/download/v3.2.1/regula_3.2.1_Linux_x86_64.tar.gz"
+
+        # Download the Regula binary
+        curl -L -o regula.tar.gz $REGULA_URL
+
+        # Extract the Regula binary
+        tar -xzf regula.tar.gz -C /usr/local/bin
+
+        # Make the Regula binary executable
+        chmod +x /usr/local/bin/regula
+
+    - name: Update .terraformrc
+      run: |
+        echo 'provider_installation {' > $HOME/.terraformrc
+        echo '  dev_overrides {' >> $HOME/.terraformrc
+        echo '    "registry.terraform.io/nonfx/starchitect" = "'"$HOME/.terraform.d/plugins"'"' >> $HOME/.terraformrc
+        echo '  }' >> $HOME/.terraformrc
+        echo '  direct {' >> $HOME/.terraformrc
+        echo '  }' >> $HOME/.terraformrc
+        echo '}' >> $HOME/.terraformrc
+
+    - name: Run Terraform Plan
+      run: |
+        cd .starchitect
+        terraform plan
