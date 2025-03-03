@@ -1,13 +1,13 @@
 provider "google" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
 }
 
 provider "google-beta" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
 }
 
 provider "random" {}
@@ -16,324 +16,107 @@ data "google_project" "project" {
   project_id = var.project_id
 }
 
-locals {
-  api_image = (var.database_type == "mysql" ? "gcr.io/sic-container-repo/todo-api" : "gcr.io/sic-container-repo/todo-api-postgres:latest")
-  fe_image  = "gcr.io/sic-container-repo/todo-fe"
-
-  api_env_vars_postgresql = {
-    redis_host = google_redis_instance.main.host
-    db_host    = google_sql_database_instance.main.ip_address[0].ip_address
-    db_user    = google_service_account.runsa.email
-    db_conn    = google_sql_database_instance.main.connection_name
-    db_name    = "todo"
-    redis_port = "6379"
-  }
-
-  api_env_vars_mysql = {
-    REDISHOST = google_redis_instance.main.host
-    todo_host = google_sql_database_instance.main.ip_address[0].ip_address
-    todo_user = "foo"
-    todo_pass = "bar"
-    todo_name = "todo"
-    REDISPORT = "6379"
-  }
-}
-
-module "project-services" {
-  source                      = "terraform-google-modules/project-factory/google//modules/project_services"
-  version                     = "15.0.1"
-  disable_services_on_destroy = false
-
-  project_id  = var.project_id
-  enable_apis = var.enable_apis
-
-  activate_apis = [
-    "compute.googleapis.com",
-    "cloudapis.googleapis.com",
-    "vpcaccess.googleapis.com",
-    "servicenetworking.googleapis.com",
-    "cloudbuild.googleapis.com",
-    "sql-component.googleapis.com",
-    "sqladmin.googleapis.com",
-    "storage.googleapis.com",
-    "run.googleapis.com",
-    "redis.googleapis.com",
-    "dns.googleapis.com"
-  ]
-}
-
-resource "google_service_account" "runsa" {
+resource "google_compute_instance" "critical_vm" {
+  name         = "${var.deployment_name}-critical-vm"
+  machine_type = "e2-medium"
+  zone         = var.zone
   project      = var.project_id
-  account_id   = "${var.deployment_name}-run-sa"
-  display_name = "Service Account for Cloud Run"
-}
+  tags         = ["critical", "production"]
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-11"
+      size  = 20
+      type  = "pd-standard"
+    }
+    # Using disk encryption key
+    disk_encryption_key_raw = "SGVsbG8gZnJvbSBHb29nbGUgQ2xvdWQgUGxhdGZvcm0="
+  }
+  network_interface {
+    network = google_compute_network.main.self_link
+    # No public IP
+  }
+  metadata = {
+    environment = "production"
+    criticality = "high"
+    # Serial port disabled
+    serial-port-enable = "false"
+    # Block project SSH keys enabled
+    # Added block-project-ssh-keys to prevent shared key access across project instances
+    block-project-ssh-keys = "true"
+    # OS Login enabled
+    enable-oslogin = "true"
+  }
+  labels = {
+    critical    = "true"
+    environment = "production"
+  }
+  service_account {
+    email  = google_service_account.runsa.email
+    scopes = ["cloud-platform"]
+  }
+  # IP forwarding disabled
+  can_ip_forward = false
 
-resource "google_project_iam_member" "allrun" {
-  for_each = toset(var.run_roles_list)
-  project  = data.google_project.project.number
-  role     = each.key
-  member   = "serviceAccount:${google_service_account.runsa.email}"
-}
+  # Shielded VM settings enabled
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
+  }
 
-resource "google_compute_network" "main" {
-  provider                = google-beta
-  name                    = "${var.deployment_name}-private-network"
-  auto_create_subnetworks = true
-  project                 = var.project_id
-  depends_on              = [module.project-services]
-}
-
-resource "google_dns_policy" "pass_policy" {
-  name           = "${var.deployment_name}-dns-policy"
-  enable_logging = true
-
-  networks {
-    network_url = google_compute_network.main.id
+  # Confidential computing enabled for enhanced data security during processing
+  confidential_instance_config {
+    enable_confidential_compute = true
   }
 }
 
-resource "google_compute_global_address" "main" {
-  name          = "${var.deployment_name}-vpc-address"
-  provider      = google-beta
-  purpose       = "VPC_PEERING"
-  address_type  = "INTERNAL"
-  prefix_length = 16
-  network       = google_compute_network.main.name
-  project       = var.project_id
-}
+# VM using specific service account
+resource "google_compute_instance" "specific_sa_vm" {
+  name         = "${var.deployment_name}-specific-sa-vm"
+  machine_type = "e2-medium"
+  zone         = var.zone
+  project      = var.project_id
 
-resource "google_service_networking_connection" "main" {
-  network                 = google_compute_network.main.self_link
-  service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges = [google_compute_global_address.main.name]
-}
-
-resource "google_vpc_access_connector" "main" {
-  provider       = google-beta
-  project        = var.project_id
-  name           = "${var.deployment_name}-vpc-cx"
-  ip_cidr_range  = "10.8.0.0/28"
-  network        = google_compute_network.main.name
-  region         = var.region
-  max_throughput = 300
-}
-
-resource "google_redis_instance" "main" {
-  authorized_network      = google_compute_network.main.name
-  connect_mode            = "DIRECT_PEERING"
-  location_id             = var.zone
-  memory_size_gb          = 1
-  name                    = "${var.deployment_name}-cache"
-  display_name            = "${var.deployment_name}-cache"
-  project                 = var.project_id
-  redis_version           = "REDIS_6_X"
-  region                  = var.region
-  reserved_ip_range       = "10.137.125.88/29"
-  tier                    = "BASIC"
-  transit_encryption_mode = "DISABLED"
-  labels                  = var.labels
-}
-
-resource "random_id" "id" {
-  byte_length = 2
-}
-
-resource "google_sql_database_instance" "main" {
-  name             = "${var.deployment_name}-db-${random_id.id.hex}"
-  database_version = (var.database_type == "mysql" ? "MYSQL_8_0" : "POSTGRES_14")
-  region           = var.region
-  project          = var.project_id
-
-  settings {
-    tier                  = "db-g1-small"
-    disk_autoresize       = true
-    disk_autoresize_limit = 0
-    disk_size             = 10
-    disk_type             = "PD_SSD"
-    user_labels           = var.labels
-    ip_configuration {
-      ipv4_enabled    = false
-      private_network = "projects/${var.project_id}/global/networks/${google_compute_network.main.name}"
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-11"
     }
-    location_preference {
-      zone = var.zone
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "cloudsql.iam_authentication"
-        value = "on"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "cloudsql.enable_pgaudit"
-        value = "on"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_connections"
-        value = "on"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_disconnections"
-        value = "on"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_error_verbosity"
-        value = "DEFAULT"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_min_duration_statement"
-        value = "-1"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_min_error_statement"
-        value = "ERROR"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_min_messages"
-        value = "WARNING"
-      }
-    }
-    dynamic "database_flags" {
-      for_each = var.database_type == "postgresql" ? [1] : []
-      content {
-        name  = "log_statement"
-        value = "ddl"
-      }
-    }
+    # Using disk encryption key
+    disk_encryption_key_raw = "SGVsbG8gZnJvbSBHb29nbGUgQ2xvdWQgUGxhdGZvcm0="
   }
-  deletion_protection = false
 
-  depends_on = [
-    google_service_networking_connection.main
-  ]
-}
-
-resource "google_sql_user" "main" {
-  project         = var.project_id
-  instance        = google_sql_database_instance.main.name
-  deletion_policy = "ABANDON"
-  name            = var.database_type == "postgresql" ? "${google_service_account.runsa.account_id}@${var.project_id}.iam" : "foo"
-  type            = var.database_type == "postgresql" ? "CLOUD_IAM_SERVICE_ACCOUNT" : null
-  password        = var.database_type == "mysql" ? "bar" : null
-}
-
-resource "google_sql_database" "database" {
-  project         = var.project_id
-  name            = "todo"
-  instance        = google_sql_database_instance.main.name
-  deletion_policy = "ABANDON"
-}
-
-resource "google_cloud_run_service" "api" {
-  name     = "${var.deployment_name}-api"
-  provider = google-beta
-  location = var.region
-  project  = var.project_id
-
-  template {
-    spec {
-      service_account_name = google_service_account.runsa.email
-      containers {
-        image = local.api_image
-        dynamic "env" {
-          for_each = var.database_type == "postgresql" ? local.api_env_vars_postgresql : local.api_env_vars_mysql
-          content {
-            name  = env.key
-            value = env.value
-          }
-        }
-      }
-    }
-
-    metadata {
-      annotations = {
-        "autoscaling.knative.dev/maxScale"        = "8"
-        "run.googleapis.com/cloudsql-instances"   = google_sql_database_instance.main.connection_name
-        "run.googleapis.com/client-name"          = "terraform"
-        "run.googleapis.com/vpc-access-egress"    = "all"
-        "run.googleapis.com/vpc-access-connector" = google_vpc_access_connector.main.id
-      }
-      labels = {
-        "run.googleapis.com/startupProbeType" = "Default"
-      }
-    }
+  network_interface {
+    network = google_compute_network.main.self_link
+    # No public IP
   }
-  metadata {
-    labels = var.labels
+
+  metadata = {
+    # OS Login enabled
+    enable-oslogin = "true"
+    # Block project SSH keys enabled
+    block-project-ssh-keys = "true"
+    # Serial port disabled
+    serial-port-enable = "false"
   }
-  autogenerate_revision_name = true
-  depends_on = [
-    google_sql_user.main,
-    google_sql_database.database
-  ]
-}
 
-resource "google_cloud_run_service" "fe" {
-  name     = "${var.deployment_name}-fe"
-  location = var.region
-  project  = var.project_id
-
-  template {
-    spec {
-      service_account_name = google_service_account.runsa.email
-      containers {
-        image = local.fe_image
-        ports {
-          container_port = 80
-        }
-        env {
-          name  = "ENDPOINT"
-          value = google_cloud_run_service.api.status[0].url
-        }
-      }
-    }
-    metadata {
-      annotations = {
-        "autoscaling.knative.dev/maxScale" = "8"
-      }
-      labels = {
-        "run.googleapis.com/startupProbeType" = "Default"
-      }
-    }
+  # Using specific service account
+  service_account {
+    email  = google_service_account.runsa.email
+    scopes = ["cloud-platform"]
   }
-  metadata {
-    labels = var.labels
+
+  # Shielded VM settings enabled
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
   }
-}
 
-resource "google_cloud_run_service_iam_member" "noauth_api" {
-  location = google_cloud_run_service.api.location
-  project  = google_cloud_run_service.api.project
-  service  = google_cloud_run_service.api.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
+  # Confidential computing
+  confidential_instance_config {
+    enable_confidential_compute = true
+  }
 
-resource "google_cloud_run_service_iam_member" "noauth_fe" {
-  location = google_cloud_run_service.fe.location
-  project  = google_cloud_run_service.fe.project
-  service  = google_cloud_run_service.fe.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
+  # IP forwarding disabled
+  can_ip_forward = false
 }
